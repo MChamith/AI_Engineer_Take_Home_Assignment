@@ -218,7 +218,8 @@ def _counterparty_names(attachment: Attachment) -> list[str]:
         return names
     for key, value in data.items():
         if key.lower() in potential_fields:
-            names.append(value)
+            if not _is_example_company(value):
+                names.append(value)
     return names
 
 
@@ -260,6 +261,9 @@ def _score_counterparty(
         return None
 
     attachment_counterparties = _counterparty_names(attachment)
+    if not attachment_counterparties:
+        return None
+
     best_name_score = None
 
     for attachment_counterparty in attachment_counterparties:
@@ -303,6 +307,7 @@ def _score_pair(transaction: Transaction, attachment: Attachment) -> Optional[fl
 
     Returns None if not enough data is present to make a meaningful comparison.
     """
+
     # Score amount match - HARD FILTER
     amount_score = _score_amount(transaction, attachment)
     if amount_score is not None and amount_score == 0:

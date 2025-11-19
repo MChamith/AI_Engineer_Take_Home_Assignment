@@ -810,6 +810,44 @@ class TestMatchingScenarios(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["id"], 2024)
 
+    # =============================================================================
+    # EXAMPLE COMPANY EDGE CASES
+    # =============================================================================
+
+    def test_scenario_match_with_example_company_only_on_amount_and_date(self):
+        """Match when attachment has only Example Company Oy with perfect amount and date.
+        
+        Example Company Oy is filtered out, leaving no counterparty data.
+        Should match based on amount + date (0.75 score > 0.60 threshold).
+        """
+        transaction = {
+            "id": 1025,
+            "amount": 500.00,
+            "contact": "Different Company Ltd",
+            "date": "2024-07-15",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2025,
+                "data": {
+                    "invoice_number": "INV-2025",
+                    "total_amount": 500.00,
+                    "issuer": "Example Company Oy",
+                    "invoicing_date": "2024-07-15",
+                    "due_date": "2024-07-15",
+                    "reference": None,
+                },
+            }
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2025)
+
+
+
 
 if __name__ == "__main__":
     unittest.main()
