@@ -4,11 +4,19 @@ This repository holds the code for take home assignment done for AI engineer pos
 
 ## Running the Application
 
+Run the matching system:
+
 ```bash
 python run.py
 ```
 
 This will process the transactions and attachments from `src/data/` and output a report of matched pairs.
+
+Run unit tests:
+
+```bash
+python tests/test_match.py
+```
 
 ## Architecture & Approach
 

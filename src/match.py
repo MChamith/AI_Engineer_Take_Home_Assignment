@@ -86,10 +86,6 @@ def _score_amount_match(transaction_amount: float, attachment_amount: float) -> 
 
 def _attachment_dates(attachment: Attachment) -> list[date]:
     """Extract date values from attachment data fields containing 'date' in their key name.
-
-    Assumes all date-related fields have 'date' substring in the key (e.g., 'due_date',
-    'invoicing_date', 'receiving_date' , etc.).
-
     Returns a list of parsed date objects. If no date fields are found, returns an empty list.
     """
     dates: list[date] = []
@@ -226,7 +222,7 @@ def _counterparty_names(attachment: Attachment) -> list[str]:
     return names
 
 
-def _parse_date(date_str: str | None) -> date | None:
+def _parse_date(date_str: Optional[str]) -> Optional[date]:
     """Parse a date string into a date object in YYYY-MM-DD format."""
     if not date_str or not isinstance(date_str, str):
         return None
