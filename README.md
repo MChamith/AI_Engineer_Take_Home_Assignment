@@ -28,38 +28,27 @@ High level approach for developing the solution is as follows:
 
 > **Rationale**: The problem states amount, date, and counterparty are equally strong signals. While amount+date alone risks false positives in real-world scenarios (multiple transactions with same amount on same date), test cases `2004` and `3004` validate that this combination can be sufficient when counterparty data is unavailable. 
 
-#### 2. There is a match for amount and counterparty only:
+#### 2. When only amount and counterparty align:
 
-- 
+- If no date information exists, accept and calculate score using match confidence.
+- If date information exists and falls within acceptable range, accept and score by match confidence.
+- If date discrepancy exceeds 14 days or represents an obvious mismatch, discard the candidate.
 
-Maximum total score: 1.15 | Acceptance threshold: 0.60
+> **Rationale**: Following the same logic as above, we assume two strong matching signals provide adequate evidence for candidate consideration. Again this simplified assumtion is not valid for real world use cases.
 
-### 3. **Hard Filters (Rejection Criteria)**
-To minimize false positives:
-- **Amount mismatch**: If both amounts present but don't match → reject immediately
-- **Weak name match**: If name score < 0.20 → reject immediately
+#### 3. When counterparty and date align:
 
-These filters ensure no match is created on date/amount alone without reasonable counterparty alignment.
+- If amount information is absent, accept and determine score based on match confidence.
+- If amount is present and matches within tolerance, accept and score accordingly.
+- If amount shows significant deviation or clear mismatch, reject the candidate.
 
-### 4. **Bidirectional Matching**
-Both `find_attachment()` and `find_transaction()` use the same core logic through a generalized `_find_match()` function, ensuring consistent behavior in both directions.
+> **Rationale**: Consistent with the previous approach, two strong signals are deemed sufficient for match consideration. This is on the premise that single counter party can have multiple invoices on the same day.
 
-### 5. **Intelligent Field Extraction**
-- **Counterparty names**: Extracts from `issuer`, `supplier`, or `recipient` fields (handles both purchase and sales invoices)
-- **Dates**: Considers all date fields (`due_date`, `invoicing_date`, etc.) to create a flexible matching range
-- **Company detection**: Ignores "Example Company Oy" when it appears in attachments (represents the company itself)
+## Assumptions
 
-## Technical Decisions
+1. **Date Overdue Threshold**: Transactions dated more than 14 days after the attachment's latest date are not considered matches unless other strong signals align.
 
-- **Deterministic**: Same input always produces same output (no randomness)
-- **Token-based name matching**: Robust to spelling variations and business suffix differences
-- **Defensive scoring**: Returns `None` when insufficient data exists rather than guessing
-- **Modular design**: Separate functions for each matching component, enabling easy testing and modification
+2. **Amount Matching Precision**: Transactions must match invoice amounts exactly, partial payments and overpayments are not supported. A tolerance of 0.01 is applied solely to accommodate floating-point arithmetic rounding differences.
 
-## Test Coverage
-
-Run tests with:
-```bash
-python -m pytest tests/
-```
+3. **Name Variations vs. Typos**: I assume "Spelling variations" in the problem refers to legitimate business name differences (e.g., "Matti Meikäläinen" vs "Matti Meikäläinen Tmi" in case 2005→3005), not character-level typos. Clearly, "Jon Snow" and "John Snow" are distinct entities and should not match. Similarly, "Matti Meikäläinen" and "Matti Meittiläinen" (case 2006) are rejected. Due to this reason, token-based matching was chosen over character-level algorithms (e.g. Jaro-Winkler) to prevent false matches between different legal entities with similar names. Supported variations include case differences, business suffixes (Oy, Ltd, Tmi), and word order.
 
