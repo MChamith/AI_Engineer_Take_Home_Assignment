@@ -6,180 +6,810 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from datetime import date
-from src.match import _clean_reference, _get_attachment_reference, _score_amount_match, _attachment_dates, _date_match, AMOUNT_WEIGHT, AMOUNT_TOLERANCE
+from src.match import find_attachment, find_transaction
 
 
-class TestCleanReference(unittest.TestCase):
-    """Tests for _clean_reference function."""
+class TestMatchingScenarios(unittest.TestCase):
+    """Scenario-based tests for transaction-attachment matching workflow.
 
-    def test_returns_none_for_none(self):
-        """Test that None input returns None."""
-        self.assertIsNone(_clean_reference(None))
+    These tests validate the complete matching system including reference matching,
+    scoring, threshold checking, and best candidate selection.
+    """
 
-    def test_returns_none_for_empty_string(self):
-        """Test that empty string returns None."""
-        self.assertIsNone(_clean_reference(''))
+    # =============================================================================
+    # ACCEPTED SCENARIOS - Perfect Amount + Name Combinations
+    # =============================================================================
 
-    def test_returns_none_for_whitespace_only(self):
-        """Test that whitespace-only strings return None."""
-        self.assertIsNone(_clean_reference('   '))
-        self.assertIsNone(_clean_reference('\n\t'))
+    def test_scenario_perfect_amount_and_name_no_date(self):
+        """Invoice matches transaction perfectly, but date field missing. Should be accepted."""
+        transaction = {
+            "id": 1001,
+            "amount": 175.00,
+            "contact": "John Doe Consulting",
+            "reference": None,
+            "date": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2001,
+                "data": {
+                    "total_amount": 175.00,
+                    "issuer": "John Doe Consulting",
+                    "reference": None,
+                },
+            },
+            {
+                "type": "invoice",
+                "id": 2002,
+                "data": {
+                    "total_amount": 200.00,
+                    "issuer": "Different Company",
+                    "reference": None,
+                },
+            },
+        ]
 
-    def test_returns_none_for_zeros_only(self):
-        """Test that strings with only zeros return None."""
-        self.assertIsNone(_clean_reference('000'))
-        self.assertIsNone(_clean_reference('0 0 0'))
-        self.assertIsNone(_clean_reference('0000000000'))
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2001)
 
-    def test_strips_whitespace_and_leading_zeros(self):
-        """Test that whitespace and leading zeros are stripped."""
-        self.assertEqual(_clean_reference('  00123  '), '123')
-        self.assertEqual(_clean_reference('\t000abc'), 'abc')
-        self.assertEqual(_clean_reference('ref001'), 'ref001')
-        self.assertEqual(_clean_reference('0010200'), '10200')
-        self.assertEqual(_clean_reference('  0 0 123 '), '123')
-        self.assertEqual(_clean_reference('1234 56 7 890'), '1234567890')
+    def test_scenario_perfect_amount_good_name_no_date(self):
+        """Amount matches, names similar but not exact (business suffix difference). Should be accepted."""
+        transaction = {
+            "id": 1002,
+            "amount": 200.00,
+            "contact": "Doe Media",  # Missing "Oy" suffix
+            "reference": None,
+            "date": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2002,
+                "data": {
+                    "total_amount": 200.00,
+                    "issuer": "Doe Media Oy",
+                    "reference": None,
+                },
+            }
+        ]
 
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2002)
 
-class TestGetAttachmentReference(unittest.TestCase):
-    """Tests for _get_attachment_reference function."""
+    def test_scenario_perfect_amount_moderate_name_good_date(self):
+        """Amount matches, name partially matches, payment 5 days late. Should be accepted."""
+        transaction = {
+            "id": 1003,
+            "amount": 1000.00,
+            "contact": "Best Supplies",  # Missing "EMEA"
+            "date": "2024-07-30",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2003,
+                "data": {
+                    "total_amount": 1000.00,
+                    "supplier": "Best Supplies EMEA",
+                    "invoicing_date": "2024-07-05",
+                    "due_date": "2024-07-25",
+                    "reference": None,
+                },
+            }
+        ]
 
-    def test_returns_clean_reference(self):
-        """Test that attachment reference is cleaned properly."""
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2003)
+
+    def test_scenario_perfect_amount_moderate_name_late_date(self):
+        """Amount matches, name partially matches, payment 10 days late. Should be accepted."""
+        transaction = {
+            "id": 1004,
+            "amount": 35.00,
+            "contact": "Matti",  # Only first name
+            "date": "2024-07-31",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2004,
+                "data": {
+                    "total_amount": 35.00,
+                    "supplier": "Matti Meikäläinen Tmi",
+                    "invoicing_date": "2024-07-18",
+                    "due_date": "2024-07-21",
+                    "reference": None,
+                },
+            }
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2004)
+
+    # =============================================================================
+    # ACCEPTED SCENARIOS - Amount + Date (No Name)
+    # =============================================================================
+
+    def test_scenario_perfect_amount_and_date_no_name(self):
+        """Transaction has no counterparty, but amount and date match perfectly. Should be accepted."""
+        transaction = {
+            "id": 1005,
+            "amount": 50.00,
+            "contact": None,
+            "date": "2024-07-10",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2005,
+                "data": {
+                    "total_amount": 50.00,
+                    "supplier": "City Utilities",
+                    "invoicing_date": "2024-06-30",
+                    "due_date": "2024-07-15",
+                    "reference": None,
+                },
+            }
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2005)
+
+    def test_scenario_perfect_amount_slightly_late_no_name(self):
+        """Transaction has no counterparty, payment 2 days late. Should be accepted."""
+        transaction = {
+            "id": 1006,
+            "amount": 324.10,
+            "contact": None,
+            "date": "2024-08-18",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2006,
+                "data": {
+                    "total_amount": 324.10,
+                    "supplier": "Pinewood Ltd",
+                    "invoicing_date": "2024-08-02",
+                    "due_date": "2024-08-16",
+                    "reference": None,
+                },
+            }
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2006)
+
+    # =============================================================================
+    # ACCEPTED SCENARIOS - Name + Date (No Amount)
+    # =============================================================================
+
+    def test_scenario_perfect_name_and_date_no_amount(self):
+        """Amount missing from attachment, but name and date match perfectly. Should be accepted."""
+        transaction = {
+            "id": 1007,
+            "amount": 250.00,
+            "contact": "Unknown Customer",
+            "date": "2024-08-15",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2007,
+                "data": {
+                    "total_amount": None,
+                    "recipient": "Unknown Customer",
+                    "invoicing_date": "2024-08-10",
+                    "due_date": "2024-08-20",
+                    "reference": None,
+                },
+            }
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2007)
+
+    def test_scenario_perfect_name_slightly_late_no_amount(self):
+        """Amount missing, name perfect, payment 2 days late. Should be accepted."""
+        transaction = {
+            "id": 1008,
+            "amount": 120.00,
+            "contact": "Office Mart",
+            "date": "2024-08-18",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2008,
+                "data": {
+                    "total_amount": None,
+                    "supplier": "Office Mart",
+                    "invoicing_date": "2024-08-05",
+                    "due_date": "2024-08-16",
+                    "reference": None,
+                },
+            }
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2008)
+
+    def test_scenario_perfect_name_moderate_delay_no_amount(self):
+        """Amount missing, name perfect, payment 5 days late (threshold case). Should be accepted."""
+        transaction = {
+            "id": 1009,
+            "amount": 88.88,
+            "contact": "Random Vendor Oy",
+            "date": "2024-08-15",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2009,
+                "data": {
+                    "total_amount": None,
+                    "supplier": "Random Vendor Oy",
+                    "invoicing_date": "2024-08-01",
+                    "due_date": "2024-08-10",
+                    "reference": None,
+                },
+            }
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2009)
+
+    def test_scenario_good_name_perfect_date_no_amount(self):
+        """Amount missing, names similar, date within range. Should be accepted."""
+        transaction = {
+            "id": 1010,
+            "amount": 500.50,
+            "contact": "Meta Corporation",
+            "date": "2024-08-12",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2010,
+                "data": {
+                    "total_amount": None,
+                    "supplier": "Meta Corp",
+                    "invoicing_date": "2024-08-05",
+                    "due_date": "2024-08-15",
+                    "reference": None,
+                },
+            }
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2010)
+
+    # =============================================================================
+    # REJECTED SCENARIOS - Hard Filters
+    # =============================================================================
+
+    def test_scenario_amount_mismatch_hard_filter(self):
+        """Amounts don't match, everything else perfect. Should be rejected."""
+        transaction = {
+            "id": 1011,
+            "amount": 175.00,
+            "contact": "John Doe Consulting",
+            "date": "2024-06-16",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2011,
+                "data": {
+                    "total_amount": 200.00,  # Different amount
+                    "issuer": "John Doe Consulting",
+                    "invoicing_date": "2024-06-15",
+                    "due_date": "2024-07-15",
+                    "reference": None,
+                },
+            }
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNone(result)  # Should be rejected
+
+    def test_scenario_weak_name_match_hard_filter(self):
+        """Names completely different, amounts match. Should be rejected."""
+        transaction = {
+            "id": 1012,
+            "amount": 175.00,
+            "contact": "Completely Different Company Ltd",
+            "date": "2024-06-16",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2012,
+                "data": {
+                    "total_amount": 175.00,
+                    "issuer": "John Doe Consulting",
+                    "invoicing_date": "2024-06-15",
+                    "due_date": "2024-07-15",
+                    "reference": None,
+                },
+            }
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNone(result)  # Should be rejected due to weak name
+
+    # =============================================================================
+    # REJECTED SCENARIOS - Below Threshold
+    # =============================================================================
+
+    def test_scenario_only_amount_and_weak_date(self):
+        """Only amount matches with moderate late date, insufficient. Should be rejected."""
+        transaction = {
+            "id": 1013,
+            "amount": 640.00,
+            "contact": None,
+            "date": "2024-09-05",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2013,
+                "data": {
+                    "total_amount": 640.00,
+                    "issuer": "Northwind Imports",
+                    "invoicing_date": "2024-08-01",
+                    "due_date": "2024-08-31",
+                    "reference": None,
+                },
+            }
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNone(result)  # Below threshold
+
+    def test_scenario_perfect_name_very_late_no_amount(self):
+        """Name matches, but payment too late and no amount to confirm. Should be rejected."""
+        transaction = {
+            "id": 1014,
+            "amount": 310.00,
+            "contact": "Global Traders",
+            "date": "2024-06-22",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "receipt",
+                "id": 2014,
+                "data": {
+                    "total_amount": None,
+                    "supplier": "Global Traders",
+                    "receiving_date": "2024-06-12",
+                    "reference": None,
+                },
+            }
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNone(result)  # Below threshold
+
+    def test_scenario_good_name_moderate_date_no_amount(self):
+        """Both fields moderate but not strong enough together. Should be rejected."""
+        transaction = {
+            "id": 1015,
+            "amount": 100.00,
+            "contact": "ABC",
+            "date": "2024-08-10",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2015,
+                "data": {
+                    "total_amount": None,
+                    "supplier": "ABC Corporation Limited",
+                    "invoicing_date": "2024-08-01",
+                    "due_date": "2024-08-05",
+                    "reference": None,
+                },
+            }
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNone(result)  # Below threshold
+
+    # =============================================================================
+    # BEST CANDIDATE SELECTION
+    # =============================================================================
+
+    def test_scenario_best_candidate_selection(self):
+        """Multiple potential matches exist, system should select the best one."""
+        transaction = {
+            "id": 1016,
+            "amount": 175.00,
+            "contact": "John Doe Consulting",
+            "date": "2024-06-16",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2016,
+                "data": {
+                    "total_amount": 175.00,
+                    "issuer": "John Doe",  # Partial name match
+                    "invoicing_date": "2024-06-15",
+                    "due_date": "2024-07-15",
+                    "reference": None,
+                },
+            },
+            {
+                "type": "invoice",
+                "id": 2017,
+                "data": {
+                    "total_amount": 175.00,
+                    "issuer": "John Doe Consulting",  # Perfect name match
+                    "invoicing_date": "2024-06-15",
+                    "due_date": "2024-07-15",
+                    "reference": None,
+                },
+            },
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2017)  # Should select the better match
+
+    def test_scenario_no_candidates_above_threshold(self):
+        """Multiple candidates exist but none above threshold. Should reject all."""
+        transaction = {
+            "id": 1017,
+            "amount": 100.00,
+            "contact": None,
+            "date": "2024-10-01",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2018,
+                "data": {
+                    "total_amount": 100.00,
+                    "issuer": "Company A",
+                    "invoicing_date": "2024-08-01",
+                    "due_date": "2024-08-15",  # Way too late
+                    "reference": None,
+                },
+            },
+            {
+                "type": "invoice",
+                "id": 2019,
+                "data": {
+                    "total_amount": 100.00,
+                    "issuer": "Company B",
+                    "invoicing_date": "2024-07-01",
+                    "due_date": "2024-07-15",  # Way too late
+                    "reference": None,
+                },
+            },
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNone(result)  # No candidate above threshold
+
+    def test_scenario_multiple_same_supplier_select_best_date(self):
+        """Multiple invoices from same supplier with same amount, should select the one with best date match."""
+        transaction = {
+            "id": 1025,
+            "amount": 500.00,
+            "contact": "TechSupply Ltd",
+            "date": "2024-08-10",
+            "reference": None,
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2025,
+                "data": {
+                    "total_amount": 500.00,
+                    "supplier": "TechSupply Ltd",
+                    "invoicing_date": "2024-07-01",
+                    "due_date": "2024-07-15",  # Old invoice, paid too late
+                    "reference": None,
+                },
+            },
+            {
+                "type": "invoice",
+                "id": 2026,
+                "data": {
+                    "total_amount": 500.00,
+                    "supplier": "TechSupply Ltd",
+                    "invoicing_date": "2024-08-01",
+                    "due_date": "2024-08-12",  # Recent invoice, date within range
+                    "reference": None,
+                },
+            },
+            {
+                "type": "invoice",
+                "id": 2027,
+                "data": {
+                    "total_amount": 300.00,  # Different amount
+                    "supplier": "ABC Ltd",
+                    "invoicing_date": "2024-08-05",
+                    "due_date": "2024-08-15",
+                    "reference": None,
+                },
+            },
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertEqual(result["id"], 2026)
+
+    # =============================================================================
+    # REFERENCE MATCHING - Bypasses Scoring
+    # =============================================================================
+
+    def test_scenario_reference_match_bypasses_scoring(self):
+        """Exact reference match should find attachment immediately, regardless of other fields."""
+        transaction = {
+            "id": 1018,
+            "amount": 175.00,
+            "contact": "Jane Smith",
+            "reference": "12345672",
+            "date": "2024-06-16",
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 3001,
+                "data": {
+                    "total_amount": 999.99,  # Different amount
+                    "recipient": "Different Person",  # Different name
+                    "reference": "12345672",  # Same reference
+                    "invoicing_date": "2024-01-01",
+                    "due_date": "2024-01-15",
+                },
+            }
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 3001)  # Reference match bypasses scoring
+
+    def test_scenario_reference_match_with_whitespace_and_zeros(self):
+        """Reference matching should handle whitespace and leading zeros."""
+        transaction = {
+            "id": 1019,
+            "amount": 200.00,
+            "contact": "John Doe",
+            "reference": "9876 543 2103",
+            "date": "2024-06-17",
+        }
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 3002,
+                "data": {
+                    "total_amount": 200.00,
+                    "issuer": "Doe Media Oy",
+                    "reference": "0000098765432103",  # Leading zeros, no spaces
+                    "invoicing_date": "2024-06-14",
+                    "due_date": "2024-07-14",
+                },
+            }
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 3002)
+
+    # =============================================================================
+    # REVERSE MATCHING - find_transaction
+    # =============================================================================
+
+    def test_scenario_find_transaction_for_attachment(self):
+        """Test reverse matching: finding transaction for an attachment."""
         attachment = {
-            'type': 'invoice',
-            'id': 3001,
-            'data': {
-                'invoice_number': 'INV-1001',
-                'reference': '  00012345672  ',
+            "type": "invoice",
+            "id": 3003,
+            "data": {
+                "total_amount": 200.00,
+                "supplier": "Jane Doe Design",
+                "invoicing_date": "2024-06-18",
+                "due_date": "2024-07-18",
+                "reference": "5550001114",
             },
         }
-        self.assertEqual(_get_attachment_reference(attachment), '12345672')
+        transactions = [
+            {
+                "id": 2003,
+                "date": "2024-06-20",
+                "amount": 200.00,
+                "contact": "Jane Doe",
+                "reference": "0000 0000 5550 0011 14",  # Same reference with formatting
+            }
+        ]
 
-    def test_returns_none_when_reference_missing(self):
-        """Test that None is returned when reference is None."""
+        result = find_transaction(attachment, transactions)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2003)
+
+    def test_scenario_find_transaction_by_score_no_reference(self):
+        """Test reverse matching without reference, based on scoring."""
         attachment = {
-            'type': 'invoice',
-            'id': 3004,
-            'data': {
-                'invoice_number': 'PINV-3002',
-                'reference': None,
+            "type": "invoice",
+            "id": 3004,
+            "data": {
+                "total_amount": 50.00,
+                "supplier": "City Utilities",
+                "invoicing_date": "2024-06-30",
+                "due_date": "2024-07-15",
+                "reference": None,
             },
         }
-        self.assertIsNone(_get_attachment_reference(attachment))
+        transactions = [
+            {
+                "id": 2004,
+                "date": "2024-07-15",
+                "amount": -50.00,  # Negative (outgoing payment)
+                "contact": None,
+                "reference": None,
+            }
+        ]
 
-    def test_returns_none_when_data_missing(self):
-        """Test that None is returned when data field is missing."""
-        attachment = {
-            'type': 'invoice',
-            'id': 9999,
+        result = find_transaction(attachment, transactions)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2004)
+
+    # =============================================================================
+    # EDGE CASES
+    # =============================================================================
+
+    def test_scenario_negative_amounts_should_match(self):
+        """Negative transaction amounts should match positive invoice amounts."""
+        transaction = {
+            "id": 1020,
+            "amount": -175.00,  # Negative (outgoing payment)
+            "contact": "John Doe Consulting",
+            "date": "2024-06-16",
+            "reference": None,
         }
-        self.assertIsNone(_get_attachment_reference(attachment))
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2020,
+                "data": {
+                    "total_amount": 175.00,  # Positive (invoice)
+                    "issuer": "John Doe Consulting",
+                    "invoicing_date": "2024-06-15",
+                    "due_date": "2024-07-15",
+                    "reference": None,
+                },
+            }
+        ]
 
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2020)
 
-class TestScoreAmountMatch(unittest.TestCase):
-    """Tests for _score_amount_match function."""
-
-    def test_exact_match(self):
-        """Test exact amount matches."""
-        self.assertEqual(_score_amount_match(100.0, 100.0), AMOUNT_WEIGHT)
-        self.assertEqual(_score_amount_match(0.0, 0.0), AMOUNT_WEIGHT)
-
-    def test_at_tolerance_boundary(self):
-        """Test amounts at tolerance boundary."""
-        self.assertEqual(_score_amount_match(100.0, 100.01), AMOUNT_WEIGHT)
-        self.assertEqual(_score_amount_match(100.0, 99.99), AMOUNT_WEIGHT)
-
-    def test_within_tolerance(self):
-        """Test amounts within tolerance."""
-        self.assertEqual(_score_amount_match(100.0, 100.005), AMOUNT_WEIGHT)
-
-    def test_outside_tolerance(self):
-        """Test amounts outside tolerance."""
-        self.assertEqual(_score_amount_match(100.0, 100.011), 0)
-        self.assertEqual(_score_amount_match(100.0, 99.989), 0)
-        self.assertEqual(_score_amount_match(100.0, 150.0), 0)
-
-    def test_opposite_amounts(self):
-        """Test negative amounts."""
-        self.assertEqual(_score_amount_match(100.0, -100.005), AMOUNT_WEIGHT)
-        self.assertEqual(_score_amount_match(100.0, -100.02), 0)
-
-  
-
-
-class TestAttachmentDates(unittest.TestCase):
-    """Tests for _attachment_dates function."""
-
-    def test_with_no_dates(self):
-        """Test that empty list is returned when attachment has no date fields."""
-        attachment = {
-            'type': 'invoice',
-            'id': 1001,
-            'data': {
-                'invoice_number': 'INV-001',
-                'amount': 100.0,
-            },
+    def test_scenario_business_suffix_ignored_in_names(self):
+        """Business suffixes (Oy, Ltd, Tmi) should be ignored in name matching."""
+        transaction = {
+            "id": 1021,
+            "amount": 35.00,
+            "contact": "Matti Meikäläinen",  # No Tmi
+            "date": "2024-07-20",
+            "reference": None,
         }
-        self.assertEqual(_attachment_dates(attachment), [])
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2021,
+                "data": {
+                    "total_amount": 35.00,
+                    "supplier": "Matti Meikäläinen Tmi",  # With Tmi
+                    "invoicing_date": "2024-07-18",
+                    "due_date": "2024-07-21",
+                    "reference": None,
+                },
+            }
+        ]
 
-    def test_with_single_date(self):
-        """Test extraction of single date field."""
-        attachment = {
-            'type': 'invoice',
-            'id': 1001,
-            'data': {
-                'invoice_date': '2024-01-10',
-                'amount': 100.0,
-            },
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2021)
+
+    def test_scenario_empty_attachments_list(self):
+        """System should handle empty attachments list gracefully."""
+        transaction = {
+            "id": 1022,
+            "amount": 100.00,
+            "contact": "Test Company",
+            "date": "2024-08-01",
+            "reference": None,
         }
-        self.assertEqual(_attachment_dates(attachment), [date(2024, 1, 10)])
+        attachments = []
 
-    def test_with_two_dates(self):
-        """Test extraction of two date fields."""
-        attachment = {
-            'type': 'invoice',
-            'id': 1001,
-            'data': {
-                'invoice_date': '2024-01-10',
-                'due_date': '2024-01-25',
-            },
+        result = find_attachment(transaction, attachments)
+        self.assertIsNone(result)
+
+    def test_scenario_multiple_counterparty_fields(self):
+        """Attachment may have multiple counterparty fields (issuer, supplier, recipient)."""
+        transaction = {
+            "id": 1023,
+            "amount": 150.00,
+            "contact": "ACME Corporation",
+            "date": "2024-08-10",
+            "reference": None,
         }
-        self.assertEqual(_attachment_dates(attachment), [date(2024, 1, 10), date(2024, 1, 25)])
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2023,
+                "data": {
+                    "total_amount": 150.00,
+                    "issuer": "Different Company",
+                    "recipient": "ACME Corporation",  # Match on recipient
+                    "invoicing_date": "2024-08-05",
+                    "due_date": "2024-08-15",
+                    "reference": None,
+                },
+            }
+        ]
 
-    def test_with_different_date_field_names(self):
-        """Test extraction with various date field naming conventions."""
-        attachment = {
-            'type': 'receipt',
-            'id': 2001,
-            'data': {
-                'receiving_date': '2024-02-15',
-                'payment_date': '2024-02-20',
-            },
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2023)
+
+    def test_scenario_date_within_invoice_range(self):
+        """Transaction date within invoice date range (between invoicing and due date)."""
+        transaction = {
+            "id": 1024,
+            "amount": 100.00,
+            "contact": "Test Supplier",
+            "date": "2024-07-10",  # Between invoice and due date
+            "reference": None,
         }
-        self.assertEqual(_attachment_dates(attachment), [date(2024, 2, 15), date(2024, 2, 20)])
+        attachments = [
+            {
+                "type": "invoice",
+                "id": 2024,
+                "data": {
+                    "total_amount": 100.00,
+                    "supplier": "Test Supplier",
+                    "invoicing_date": "2024-07-01",
+                    "due_date": "2024-07-15",
+                    "reference": None,
+                },
+            }
+        ]
+
+        result = find_attachment(transaction, attachments)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 2024)
 
 
-class TestScoreDateMatch(unittest.TestCase):
-    """Tests for _date_match function."""
-
-    def test_none_transaction_date(self):
-        """Test that None transaction_date returns None."""
-        attachment_dates = [date(2024, 1, 10), date(2024, 1, 20)]
-        self.assertIsNone(_date_match(None, attachment_dates))
-
-    def test_empty_attachment_dates(self):
-        """Test that empty attachment_date list returns None."""
-        transaction_date = date(2024, 1, 15)
-        self.assertIsNone(_date_match(transaction_date, []))
-
-    def test_more_than_14_days_returns_none(self):
-        """Test more than 14 days from max date returns None."""
-        transaction_date = date(2024, 2, 5)
-        attachment_dates = [date(2024, 1, 10), date(2024, 1, 20)]
-        self.assertIsNone(_date_match(transaction_date, attachment_dates))
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
